@@ -1,9 +1,14 @@
+import logging
 import re
 from urllib.parse import urljoin, urlparse
 
 from httpx import Response
+from pydantic import ValidationError
 
+from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import ProtectedResourceMetadata
+
+logger = logging.getLogger(__name__)
 
 
 def extract_field_from_www_auth(response: Response, field_name: str) -> str | None:
@@ -134,3 +139,53 @@ def get_discovery_urls(auth_server_url: str) -> list[str]:
     urls.append(oidc_fallback)
 
     return urls
+
+
+async def handle_protected_resource_response(
+    response: Response,
+) -> tuple[bool, ProtectedResourceMetadata | None, str | None]:
+    """
+    Handle protected resource metadata discovery response.
+
+    Per SEP-985, supports fallback when discovery fails at one URL.
+
+    Returns:
+        True if metadata was successfully discovered, False if we should try next URL
+    """
+    if response.status_code == 200:
+        try:
+            content = await response.aread()
+            metadata = ProtectedResourceMetadata.model_validate_json(content)
+            auth_server_url: str | None = None
+            if metadata.authorization_servers:
+                auth_server_url = str(metadata.authorization_servers[0])
+            return True, metadata, auth_server_url
+
+        except ValidationError:
+            # Invalid metadata - try next URL
+            logger.warning(f"Invalid protected resource metadata at {response.request.url}")
+            return False, None, None
+    elif response.status_code == 404:
+        # Not found - try next URL in fallback chain
+        logger.debug(f"Protected resource metadata not found at {response.request.url}, trying next URL")
+        return False, None, None
+    else:
+        # Other error - fail immediately
+        raise OAuthFlowError(f"Protected Resource Metadata request failed: {response.status_code}")
+
+
+# async def discovery_process(discovery_urls: list[str]) -> AsyncGenerator[Request, Response]:
+#     discovery_success = False
+#     prm, auth_url = None, None
+#     for url in discovery_urls:
+#         discovery_request = Request("GET", url, headers={MCP_PROTOCOL_VERSION: LATEST_PROTOCOL_VERSION})
+#         discovery_response, prm, auth_url = yield discovery_request
+#
+#         discovery_success = await handle_protected_resource_response(discovery_response)
+#         if discovery_success:
+#             break
+#
+#     if discovery_success:
+#         return
+#     else:
+#         raise OAuthFlowError("Protected resource metadata discovery failed: no valid metadata found")

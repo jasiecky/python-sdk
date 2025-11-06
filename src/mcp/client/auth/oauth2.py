@@ -26,6 +26,7 @@ from mcp.client.auth.utils import (
     extract_scope_from_www_auth,
     get_client_metadata_scopes,
     get_discovery_urls,
+    handle_protected_resource_response,
 )
 from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
 from mcp.shared.auth import (
@@ -502,8 +503,15 @@ class OAuthClientProvider(httpx.Auth):
                             "GET", url, headers={MCP_PROTOCOL_VERSION: LATEST_PROTOCOL_VERSION}
                         )
                         discovery_response = yield discovery_request
-                        discovery_success = await self._handle_protected_resource_response(discovery_response)
+                        discovery_success, prm, auth_server_url = await handle_protected_resource_response(
+                            discovery_response
+                        )
                         if discovery_success:
+                            assert prm is not None
+                            assert auth_server_url is not None
+                            self.context.protected_resource_metadata = prm
+                            if prm.authorization_servers:
+                                self.context.auth_server_url = auth_server_url
                             break
 
                     if not discovery_success:
